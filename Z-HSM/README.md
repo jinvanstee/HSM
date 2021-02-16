@@ -1,29 +1,250 @@
-# PKCS #11 deployment instructions for openCryptoki HSM
+# PKCS11-proxy deployment as a standalone Docker container
+In order for your IBM Blockchain Platform nodes to use your IBM Z openCryptoki HSM to manage its private key, you must create a PKCS #11 proxy that allows the blockchain nodes to communicate with the Z-HSM. This README describes how to build the PKCS #11 proxy into a Docker image and then deploy it to a Linux Virtual Machine on s390x. After you complete this process, you will have the values of the HSM proxy endpoint, HSM Label, and HSM PIN that are required by the IBM Blockchain Platform node to use the Z HSM.
 
-In order for your IBM Blockchain Platform nodes to use your IBM Z openCryptoki HSM to manage its private key, you must create a PKCS #11 proxy that allows the nodes to communicate with the HSM. This README describes how to build the PKCS #11 proxy into a Docker image and then deploy the image to your Kubernetes cluster. After you complete this process, you will have the values of the **HSM proxy endpoint**, **HSM Label**, and **HSM PIN** that are required by the IBM Blockchain Platform node to use the HSM.
+Please note that the official supported way of having IBP use the Z HSM is documented [here](https://github.com/IBM-Blockchain/HSM/tree/master/Z-HSM). This repo leverages assets from the aforementioned repo and documents a workaround to integrate with the Z-HSM. This workaround has been verified on Ubuntu 18.04 on Linux on IBM Z. Please also note that this is not a highly available workaround as it only sets up one pkcs11-proxy that is backed by one Z HSM adapter/domain pair.
 
-## Before you begin
+## Prerequisites
+* A Linux system on s390x to host the pkcs11-proxy container.
+* The IBM Blockchain Platform nodes have network access to the Linux system on s390x.
+* The Linux system must be enabled with the EP11 stack. Please see [here](https://www.ibm.com/support/knowledgecenter/linuxonibm/com.ibm.linux.z.lxce/lxce_building_stack.html) for full instructions on enabling the EP11 stack for your Linux on s390x system.
 
-- The following instructions require a Docker Hub account.
-- You will need to provide a storage class for your PVC.
-- These instructions assume you can connect to your Kubernetes cluster and are comfortable to use `kubectl` commands.
-- You should have an [openCryptoki HSM](https://www.ibm.com/support/knowledgecenter/linuxonibm/com.ibm.linux.z.lxce/lxce_usingep11.html) configured for your Z environment and you have the values of the HSM **EP11_SLOT_TOKEN_LABEL**, **EP11_SLOT_SO_PIN**, and **EP11_SLOT_USER_PIN**.
+## Step 1. Configuring openCryptoki for EP11 support
+After you have enabled your s390x Linux system with the EP11 stack, please go through this [documentation](https://www.ibm.com/support/knowledgecenter/linuxonibm/com.ibm.linux.z.lxce/lxce_configuring_ocryptoki_ep11tok.html) to configure openCryptoki for EP11 support. 
 
-# Step 1. Build and push PKCS #11 proxy image
+I will share in this repo the configuration files that I used for your reference, but it is strongly advised to go through the documentation yourself to understand all the options and settings available to you.
 
-Use these steps to build a Docker image that contains the PKCS #11 proxy, which enables communications with the openCryptoki HSM, and push it to your Docker registry.
+### /etc/opencryptoki/opencryptoki.conf
 
-Switch to the `docker-image` subfolder when you complete the tasks in Step 1.
+Below is my openCryptoki configuration file. I have removed the slots that aren't applicable to my configuration from the default configuration file, and kept the EP11 slot which is slot 4 by default. Please note that you may have a newer version of opencryptoki. Again I would reference the [official documentation](https://www.ibm.com/support/knowledgecenter/linuxonibm/com.ibm.linux.z.lxce/lxce_configuring_ocryptoki_ep11tok.html) for the latest available options.
 
-## Provide your HSM slot configuration
+```
+version opencryptoki-3.1
 
-Before you can build the Docker image, you need to provide your HSM slot label, initialization code, and PIN by editing the [`entrypoint.sh`](./docker-image/entrypoint.sh) file. This file is used to initialize the Docker container, by passing the required setup steps to the container.
+slot 4
+{
+stdll = libpkcs11_ep11.so
+confname = ep11tok.conf
+tokname = ep11tok
+}
+```
 
-Replace the following variables in the file:
+### /etc/opencryptoki/ep11tok.conf
+
+Below is my ep11 token configuration file. This file is referenced by the `/etc/opencryptoki/opencryptoki.conf` file.
+
+```
+APQN_WHITELIST
+ 8 0x15
+END
+```
+
+The term APQN stands for adjunct processor queue number. It designates the combination of a cryptographic coprocessor (adapter) and a domain, a so-called adapter/domain pair. At least one adapter/domain pair must be specified. For more information on the options available for this configuration file, please see [here](https://www.ibm.com/support/knowledgecenter/linuxonibm/com.ibm.linux.z.lxce/lxce_ep11_conffile.html).
+
+Please make sure that the configuration matches your crypto adapter and domain. You can find out what yours are with the `lszcrypt` command. For example, the `lszcrypt` output that corresponds to the above ep11 token configuration file is:
+
+```
+$ lszcrypt
+CARD.DOMAIN TYPE  MODE        STATUS  REQUEST_CNT
+-------------------------------------------------
+08          CEX6P EP11-Coproc online            8
+08.0015     CEX6P EP11-Coproc online            8
+``` 
+
+###  Start the slot daemon
+
+Use one of the following command to start the slot daemon, which reads out the configuration information and sets up the tokens:
+
+```
+$ service pkcsslotd start 
+```
+
+or
+```
+$ systemctl start pkcsslotd.service   /* for Linux distributions providing systemd */
+```
+
+You might need to have `sudo` authority to run the above command.
+
+For a permanent solution, specify:
+```
+$ chkconfig pkcsslotd on
+```
+
+### Initialize the EP11 token
+
+Once the openCryptoki configuration file and the configuration files of the EP11 tokens are set up, and the pkcsslotd daemon is started, the EP11 token instances must be initialized. See this [documentation](https://www.ibm.com/support/knowledgecenter/linuxonibm/com.ibm.linux.z.lxce/lxce_initializing_ep11token.html) for step by step instructions on how to do this. 
+
+After this process, you should have the following information to pass into the Docker container:
+
+```
+EP11_SLOT_NO=4
+EP11_SLOT_TOKEN_LABEL=EP11Tok1
+EP11_SLOT_SO_PIN=12345678
+EP11_SLOT_USER_PIN=84959689
+```
+
+You need to change the values to the values you set during your initialization steps.
+
+To verify that the EP11 token has been initialized, run the following command:
+
+```
+$ sudo pkcsconf -t
+```
+
+Example output:
+
+```
+Token #4 Info:
+	Label: EP11Tok1                        
+	Manufacturer: IBM Corp.                       
+	Model: IBM EP11Tok     
+	Serial Number: 123             
+	Flags: 0x44D (RNG|LOGIN_REQUIRED|USER_PIN_INITIALIZED|CLOCK_ON_TOKEN|TOKEN_INITIALIZED)
+	Sessions: 0/18446744073709551614
+	R/W Sessions: 18446744073709551615/18446744073709551614
+	PIN Length: 4-8
+	Public Memory: 0xFFFFFFFFFFFFFFFF/0xFFFFFFFFFFFFFFFF
+	Private Memory: 0xFFFFFFFFFFFFFFFF/0xFFFFFFFFFFFFFFFF
+	Hardware Version: 1.0
+	Firmware Version: 1.0
+	Time: 15:47:21
+
+```
+
+### 
+
+
+
+
+(base) Jins-MBP-2:Z-HSM jinvanstee$ :q
+-bash: :q: command not found
+(base) Jins-MBP-2:Z-HSM jinvanstee$ ls
+README.md
+(base) Jins-MBP-2:Z-HSM jinvanstee$ cat README.md
+# PKCS11-proxy deployment as a standalone Docker container
+In order for your IBM Blockchain Platform nodes to use your IBM Z openCryptoki HSM to manage its private key, you must create a PKCS #11 proxy that allows the blockchain nodes to communicate with the Z-HSM. This README describes how to build the PKCS #11 proxy into a Docker image and then deploy it to a Linux Virtual Machine on s390x. After you complete this process, you will have the values of the HSM proxy endpoint, HSM Label, and HSM PIN that are required by the IBM Blockchain Platform node to use the Z HSM.
+
+Please note that the official supported way of having IBP use the Z HSM is documented [here](https://github.com/IBM-Blockchain/HSM/tree/master/Z-HSM). This repo leverages assets from the aforementioned repo and documents a workaround to integrate with the Z-HSM. This workaround has been verified on Ubuntu 18.04 on Linux on IBM Z. Please also note that this is not a highly available workaround as it only sets up one pkcs11-proxy that is backed by one Z HSM adapter/domain pair.
+
+## Prerequisites
+* A Linux system on s390x to host the pkcs11-proxy container.
+* The IBM Blockchain Platform nodes have network access to the Linux system on s390x.
+* The Linux system must be enabled with the EP11 stack. Please see [here](https://www.ibm.com/support/knowledgecenter/linuxonibm/com.ibm.linux.z.lxce/lxce_building_stack.html) for full instructions on enabling the EP11 stack for your Linux on s390x system.
+
+## Step 1. Configuring openCryptoki for EP11 support
+After you have enabled your s390x Linux system with the EP11 stack, please go through this [documentation](https://www.ibm.com/support/knowledgecenter/linuxonibm/com.ibm.linux.z.lxce/lxce_configuring_ocryptoki_ep11tok.html) to configure openCryptoki for EP11 support. 
+
+I will share in this repo the configuration files that I used for your reference, but it is strongly advised to go through the documentation yourself to understand all the options and settings available to you.
+
+### /etc/opencryptoki/opencryptoki.conf:
+
+Below is my openCryptoki configuration file. I have removed the slots that aren't applicable to my configuration from the default configuration file, and kept the EP11 slot which is slot 4 by default. Please note that you may have a newer version of opencryptoki. Again I would reference the [official documentation](https://www.ibm.com/support/knowledgecenter/linuxonibm/com.ibm.linux.z.lxce/lxce_configuring_ocryptoki_ep11tok.html) for the latest available options.
+
+```
+version opencryptoki-3.1
+
+slot 4
+{
+stdll = libpkcs11_ep11.so
+confname = ep11tok.conf
+tokname = ep11tok
+}
+```
+
+### /etc/opencryptoki/ep11tok.conf:
+
+Below is my ep11 token configuration file. This file is referenced by the `/etc/opencryptoki/opencryptoki.conf` file.
+
+```
+APQN_WHITELIST
+ 8 0x15
+END
+```
+
+The term APQN stands for adjunct processor queue number. It designates the combination of a cryptographic coprocessor (adapter) and a domain, a so-called adapter/domain pair. At least one adapter/domain pair must be specified. For more information on the options available for this configuration file, please see [here](https://www.ibm.com/support/knowledgecenter/linuxonibm/com.ibm.linux.z.lxce/lxce_ep11_conffile.html).
+
+Please make sure that the configuration matches your crypto adapter and domain. You can find out what yours are with the `lszcrypt` command. For example, the `lszcrypt` output that corresponds to the above ep11 token configuration file is:
+
+```
+$ lszcrypt
+CARD.DOMAIN TYPE  MODE        STATUS  REQUEST_CNT
+-------------------------------------------------
+08          CEX6P EP11-Coproc online            8
+08.0015     CEX6P EP11-Coproc online            8
+``` 
+
+###  Start the slot daemon
+
+Use one of the following command to start the slot daemon, which reads out the configuration information and sets up the tokens:
+
+```
+$ service pkcsslotd start 
+```
+
+or
+```
+$ systemctl start pkcsslotd.service   /* for Linux distributions providing systemd */
+```
+
+You might need to have `sudo` authority to run the above command.
+
+For a permanent solution, specify:
+```
+$ chkconfig pkcsslotd on
+```
+
+### Initialize the EP11 token
+
+Once the openCryptoki configuration file and the configuration files of the EP11 tokens are set up, and the pkcsslotd daemon is started, the EP11 token instances must be initialized. See this [documentation](https://www.ibm.com/support/knowledgecenter/linuxonibm/com.ibm.linux.z.lxce/lxce_initializing_ep11token.html) for step by step instructions on how to do this. 
+
+After this process, you should have the following information to pass into the Docker container:
+
+```
+EP11_SLOT_NO=4
+EP11_SLOT_TOKEN_LABEL=EP11Tok
+EP11_SLOT_SO_PIN=12345678
+EP11_SLOT_USER_PIN=84959689
+```
+
+You need to change the values to the values you set during your initialization steps.
+
+To verify that the EP11 token has been initialized, run the following command:
+
+```
+$ sudo pkcsconf -t
+```
+
+Example output:
+
+```
+Token #4 Info:
+	Label: EP11Tok                        
+	Manufacturer: IBM Corp.                       
+	Model: IBM EP11Tok     
+	Serial Number: 123             
+	Flags: 0x44D (RNG|LOGIN_REQUIRED|USER_PIN_INITIALIZED|CLOCK_ON_TOKEN|TOKEN_INITIALIZED)
+	Sessions: 0/18446744073709551614
+	R/W Sessions: 18446744073709551615/18446744073709551614
+	PIN Length: 4-8
+	Public Memory: 0xFFFFFFFFFFFFFFFF/0xFFFFFFFFFFFFFFFF
+	Private Memory: 0xFFFFFFFFFFFFFFFF/0xFFFFFFFFFFFFFFFF
+	Hardware Version: 1.0
+	Firmware Version: 1.0
+	Time: 15:47:21
+
+```
+
+## Step 2. Build the Docker image
+
+Clone this repo to your Linux on s390x system. Before you can build the Docker image, you need to provide your HSM slot number, HSM slot label, initialization code, and PIN by editing the [`entrypoint.sh`](./docker-image/entrypoint.sh) file. This file is used to initialize the Docker container, by passing the required setup steps to the container.
+
+Replace the following variables in the file with the ones you setup in the previous step:
 
 - **`<EP11_SLOT_TOKEN_LABEL>`**: Specify the token label of the slot to use. **Record this value because it is required when you configure an IBM Blockchain Platform node to use this HSM.**
 - **`<EP11_SLOT_SO_PIN>`**: Specify the initialization code of the slot.
 - **`<EP11_SLOT_USER_PIN>`**: Specify the HSM PIN for the slot. **Record this value because it is required when you configure an IBM Blockchain Platform node to use this HSM.**
+
+Note if you used a slot number other than the default 4 for your EP11 token, then you need to update the variable **EP11_SLOT_NO** as well.
 
 ### `entrypoint.sh` Template
 ```sh
@@ -82,547 +303,18 @@ docker build -t pkcs11-proxy-opencryptoki:s390x-1.0.0 -f Dockerfile .
 
 This command is also provided in the [docker-image-build.sh](./docker-image/docker-image-build.sh) file.
 
-## Push Docker image
 
-Connect to your Docker Hub and then run the following set of commands to push the Docker image to your Docker Hub repository.
 
-Replace the following variables in the commands:
+## Step 3. Run pkcs11-proxy Docker container
 
-- **`<DOCKER_HUB>`**: Specify the address of your Docker server.
-- **`<DOCKER_HUB_ID>`**: Specify your Docker Hub username or email address.
-- **`<DOCKER_HUB_PWD>`**: Specify your Docker Hub password.
+To deploy the newly built 'pkcs11-proxy' image, edit the shell script provided in [run-docker.sh](./deployment/run-docker.sh) to match your EP11 initialization details (If you didn't do this directly in [entrypoint.sh](./docker-image/entrypoint.sh) back in Step 2, you can choose to pass the variables in this file to your running Docker container). Deploy the Docker container with:
 
-```
-DOCKER_HUB=<DOCKER_HUB>
+`. deployment/run-docker.sh
+`
 
-docker tag pkcs11-proxy-opencryptoki:s390x-1.0.0 $DOCKER_HUB/pkcs11-proxy-opencryptoki:s390x-1.0.0
-docker login -u <DOCKER_HUB_ID> -p <DOCKER_HUB_PWD> $DOCKER_HUB
-docker push $DOCKER_HUB/pkcs11-proxy-opencryptoki:s390x-1.0.0
-```
-
-These commands are also provided in the [docker-image-push.sh](./docker-image/docker-image-push.sh) file.
-
-# Step 2. Deploy the image to Kubernetes
-
-After you have built the image, there are a few additional tasks you need to perform before you can deploy the Docker image.
-
-Switch to the `deployment` subfolder when you complete the tasks in Step 2.
-
-## Create a Docker registry secret
-
-Run the following commands to create a Kubernetes secret named `ibprepo-key-secret` to store your Docker image pull secret.
-
-Replace the following variables in the commands:
-
-- **`<DOCKER_HUB>`**: Specify the address your Docker server.
-- **`<DOCKER_HUB_ID>`**: Specify your Docker Hub username or email address.
-- **`<DOCKER_HUB_PWD>`**: Specify your Docker Hub password.
-- **`<NAMESPACE>`**: Specify the name of your Kubernetes namespace.
+Check the Docker container logs, you should see the following to indicate that the pkcs11-proxy is listening for incoming requests.
 
 ```
-DOCKER_HUB=<DOCKER_HUB>
-DOCKER_HUB_ID=<DOCKER_HUB_ID>
-DOCKER_HUB_PWD=<DOCKER_HUB_PWD>
-namespace=<NAMESPACE>
-
-kubectl create secret docker-registry ibprepo-key-secret --docker-server=$DOCKER_HUB   --docker-username=$DOCKER_HUB_ID --docker-password=$DOCKER_HUB_PWD --docker-email=$DOCKER_HUB_ID -n $namespace
-```
-
-## Create an image pull policy
-
-Edit the [image-policy.yaml](./deployment/image-policy.yaml) file, replacing **`<DOCKER_HUB>`** with the address your Docker server.
-
-### `imagePolicy.yaml` template
-```yaml
-apiVersion: securityenforcement.admission.cloud.ibm.com/v1beta1
-kind: ImagePolicy
-metadata:
-  name: image-policy-pkcs11-proxy
-spec:
-  repositories:
-  - name: <DOCKER_HUB>
-```
-
-Run the following command to apply this policy to your Kubernetes namespace, replacing **`<NAMESPACE>`** with the name of your Kubernetes namespace.
-
-```
-kubectl apply -f image-policy.yaml -n <NAMESPACE>
-```
-
-## Create PVC
-
-Edit the [opencryptoki-token-pvc.yaml](./deployment/opencryptoki-token-pvc.yaml) file to provide the name of the storage class for your PVC in the **`<STORAGECLASS_NAME>`** variable.
-
-### `opencryptoki-token-pvc.yaml` template
-```yaml
-kind: PersistentVolumeClaim
-apiVersion: v1
-metadata:
-  name: opencryptoki-token-pvc
-spec:
-  accessModes:
-    - ReadWriteMany
-  resources:
-    requests:
-      storage: 1Gi
-  storageClassName: <STORAGECLASS_NAME>
-```
-
-**Note:** 1Gi is default value set for storage that PKCS #11 proxy uses. You can modify it in the `opencryptoki-token-pvc.yaml` file as required.
-
-Run the following command to apply this PVC to your Kubernetes namespace, replacing **`<NAMESPACE>`** with the name of your Kubernetes namespace.
-
-```
-kubectl apply -f opencryptoki-token-pvc.yaml -n <NAMESPACE>
-```
-
-## Create Security Policy
-
-The Security Policy is based on three configuration files:
-- [psp.yaml](./deployment/psp.yaml)
-- [clusterrole.yaml](./deployment/clusterrole.yaml)
-- [clusterrolebinding.yaml](./deployment/clusterrolebinding.yaml)
-
-No modifications are required for the `psp.yaml` or the `clusterrole.yaml` files. But you do need to edit the [clusterrolebinding.yaml](./deployment/clusterrolebinding.yaml) file and replace
-**`<NAMESPACE>`** with the name of your Kubernetes namespace.
-
-### `clusterrolebinding.yaml` template
-```yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: pkcs11-proxy-clusterrolebinding
-subjects:
-- apiGroup: rbac.authorization.k8s.io
-  kind: Group
-  name: system:serviceaccounts:<NAMESPACE>
-roleRef:
-  kind: ClusterRole
-  name: pkcs11-proxy-clusterrole
-  apiGroup: rbac.authorization.k8s.io
-```
-
-Deploy the security policy by running the following commands:
-
-```
-kubectl apply -f psp.yaml
-kubectl apply -f clusterrole.yaml
-kubectl apply -f clusterrolebinding.yaml
-```
-
-## Create label for Kubernetes node
-
-Create a label for the Kubernetes node where the IBM HSM cryptographic card is installed. The label and value are required in a subsequent step when you deploy the Docker image to your Kubernetes cluster.
-
-1. Run the following command to get information about all the nodes in cluster:
-
-  ```sh
-  kubectl get nodes
-  ```
-
-2. Create a label for your node on which an IBM HSM cryptographic card is installed.
-
-  ```sh
-  kubectl label node <NODENAME> --overwrite=true <LABEL-KEY>=<LABEL-VALUE>
-  ```
-
-  Replace the following variables in the command:
-  - **`<NODENAME>`**: Specify the name of the node in your cluster where the HSM cryptographic card is installed.
-  - **`<LABEL-KEY>`**: Specify the label that you want to assign to this node, for example, `HSM`.
-  - **`<LABEL-VALUE>`**: Specify the value of the label key, for example, `installed`.   
-
-  For example:
-  ```
-  kubectl label node worker1 --overwrite=true HSM=installed
-  ```
-
-3. Verify that the label was created successfully by running the following command, replacing **`<NODENAME>`** with the name of the node in your cluster where the HSM cryptographic card is installed.
-
-  ```sh
-  kubectl get node <NODENAME> --show-labels=true
-  ```
-**Important:** Record the values of the `<LABEL-KEY>`:`<LABEL-VALUE>` pair to provide it in a subsequent step.
-
-## Deploy the image
-
-The [pkcs11-proxy-opencryptoki.yaml](./deployment/pkcs11-proxy-opencryptoki.yaml) is used to deploy the image to your Kubernetes cluster. It contains the configuration information for the Docker image, the PKCS #11 proxy, and openCryptoki settings. Edit the file and provide the values from your own environment:
-
-Replace the following variables in the file:
-- **`<IBPREPO-KEY-SECRET>`**: Specify the name of the docker-registry secret that you created in the [Create a Docker registry secret](#create-a-docker-registry-secret) step. For example, `ibprepo-key-secret`.
-- **`<LABEL-KEY>`**: **`<LABEL-VALUE>`**: Specify the label of the Kubernetes node where the cryptographic card is installed, from the [Create label for Kubernetes node](#create-label-for-kubernetes-node) step.
-- **`<IMAGE-TAG>`**: Specify the image tag that was created in the [Push Docker image](#push-docker-image) step. For example, `pkcs11-proxy-opencryptoki:s390x-1.0.0`.
-
-### `pkcs11-proxy-opencryptoki.yaml` template
-
-```yaml
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: pkcs11-proxy
-  labels:
-    app: pkcs11
-spec:
-  ports:
-  - name: http
-    port: 2345
-    protocol: TCP
-    targetPort: 2345
-  selector:
-    app: pkcs11
-  type: NodePort
-
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: pkcs11-proxy
-  labels:
-    app: pkcs11
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: pkcs11
-  template:
-    metadata:
-      labels:
-        app: pkcs11
-    spec:
-      imagePullSecrets:
-        - name: <IBPREPO-KEY-SECRET>
-      securityContext:
-        privileged: true
-      nodeSelector:
-        <LABEL-KEY>: <LABEL-VALUE>
-      containers:
-      - name: proxy
-        image: <IMAGE-TAG>
-        imagePullPolicy: IfNotPresent
-        ports:
-        - containerPort: 2345
-        securityContext:
-          privileged: true
-          allowPrivilegeEscalation: true
-          readOnlyRootFilesystem: false
-        livenessProbe:
-          tcpSocket:
-            port: 2345
-          initialDelaySeconds: 15
-          timeoutSeconds: 5
-          failureThreshold: 5
-        readinessProbe:
-          tcpSocket:
-            port: 2345
-          initialDelaySeconds: 15
-          timeoutSeconds: 5
-          periodSeconds: 5
-        volumeMounts:
-        - name: token-object-storage
-          mountPath: /var/lib/opencryptoki
-        - name: opencryptoki-config
-          mountPath: /etc/opencryptoki
-      volumes:
-      - name: token-object-storage
-        persistentVolumeClaim:
-          claimName: opencryptoki-token-pvc
-      - name: opencryptoki-config
-        emptyDir: {}
-```
-
-**Note:** The port `2345` is hard-coded in this file, but you can change it to suit your needs.
-
-Run the following command to deploy the openCryptoki proxy to your Kubernetes cluster, replacing **`<NAMESPACE>`** with the name of your Kubernetes namespace.
-
-```
-kubectl apply -f pkcs11-proxy-opencryptoki.yaml -n <NAMESPACE>
-```
-
-
-# Step 3. Test your deployment
-
-After the deployment is complete, you can test and verify the configuration.
-
-## Find your cluster ip address
-
-Before you can test your HSM, you need to determine the `<IP_ADDRESS>` and `<PORT>` of your HSM's PKCS #11 proxy.
-When all of your IBM Blockchain Platform components (CA, peer, ordering nodes) are local to the cluster, you can use either the internal IP address and port or external IP address and port. But if your blockchain components are not local to the cluster, then you must use the external IP address and port. These instructions describe how to get both pairs of values.
-
-### External IP address
-
-First, run the following command to get a list of IP Addresses for all the nodes in your Kubernetes cluster:
-
-```sh
-kubectl get node -o wide
-```
-
-For example:
-
-```sh
-$ kubectl get node -o wide
-NAME           STATUS   ROLES                                 AGE   VERSION          INTERNAL-IP    EXTERNAL-IP   OS-IMAGE             KERNEL-VERSION      CONTAINER-RUNTIME
-9.47.152.220   Ready    worker                                28d   v1.13.9+icp-ee   9.47.152.220   <none>        Ubuntu 18.04.4 LTS   4.15.0-88-generic   docker://18.9.7
-9.47.152.235   Ready    etcd,management,master,proxy,worker   28d   v1.13.9+icp-ee   9.47.152.235   <none>        Ubuntu 18.04.4 LTS   4.15.0-88-generic   docker://18.9.7
-9.47.152.236   Ready    worker                                28d   v1.13.9+icp-ee   9.47.152.236   <none>        Ubuntu 18.04.4 LTS   4.15.0-88-generic   docker://18.9.7
-```
-
-Look for the row that contains the `master` node. In the example above, the `master` node IP Address (indicated by the `EXTERNAL-IP` field) is: `9.47.152.235`.
-
-
-### INTERNAL IP address and port
-
-Now run the following command to get the CLUSTER-IP address and the internal and external port of the service, replacing
-**`<NAMESPACE>`** with name of your Kubernetes namespace.
-
-```sh
-kubectl get service pkcs11-proxy -n <NAMESPACE>
-```
-
-For example:
-```sh
-$ kubectl get service pkcs11-proxy -n pkcs11-proxy
-NAME           TYPE       CLUSTER-IP     EXTERNAL-IP   PORT(S)          AGE
-pkcs11-proxy   NodePort   10.0.163.235   <none>        2345:30846/TCP   20h
-```
-
-From the example above, the internal `CLUSTER-IP` is `10.0.163.235` and the `Internal-port` is `2345`. The `External-port` is `30846`.
-
-### Putting it all together
-
-There are two pairs of values that can be used for the PKCS #11 Proxy `<IP_ADDRESS>:<PORT>`: one for `Internal-port`, and the other for `External-port`.
-
-`Internal-port` pair: `<CLUSTER-IP>:<Internal-PORT>`, from the Internal IP address and port example above, this value would be `10.0.163.235:2345`. This pair can be used when the IBM Blockchain Platform components (CA, peer, ordering node) are deployed in the same cluster.
-
-`External-port` pair: `<Master-node-IP>:<External-PORT>`, from the external IP address example above, this value would be `9.47.152.235:30846`.  This pair would be used when the IBM Blockchain Platform components (CA, peer, ordering nodes) are deployed either in the same cluster or are NOT in the same cluster.
-
-## Run the `pkcs11-tool`
-
-Ensure that you [install the pkcs11-tool](#install-the-pkcs11-tool) on your local machine, for example, at `/usr/local/lib/libpkcs11-proxy.so`. Then, run the following command:
-
-```
-PKCS11_PROXY_SOCKET="tcp://<IP_ADDRESS>:<PORT>" pkcs11-tool --module=/usr/local/lib/libpkcs11-proxy.so --token-label <EP11_SLOT_TOKEN_LABEL> --pin <EP11_SLOT_USER_PIN> -t
-```
-
-Replace the following variables in the command:
-- **`<IP_ADDRESS>:<PORT>`**: Specify the value returned from the [Find your cluster IP address](#find-your-cluster-ip-address) step.
-- **`<EP11_SLOT_TOKEN_LABEL>`**: Specify the value that you specified for the `EP11_SLOT_TOKEN_LABEL` variable in the `entrypoint.sh` file.
-- **`<EP11_SLOT_USER_PIN>`**: Specify the value that you specified for the `EP11_SLOT_USER_PIN` variable in the `entrypoint.sh` file.
-
-For example:
-```
-PKCS11_PROXY_SOCKET="tcp://9.47.152.235:30846`" pkcs11-tool --module=/usr/local/lib/libpkcs11-proxy.so --token-label PKCS11 --pin 87654312 -t
-```
-
-The output of this command should look similar to:
-
-```
-$ PKCS11_PROXY_SOCKET="tcp://9.47.152.235:30846`" pkcs11-tool --module=/usr/local/lib/libpkcs11-proxy.so --token-label PKCS11 --pin 87654312 -t
-
-C_SeedRandom() and C_GenerateRandom():
-  seeding (C_SeedRandom) not supported
-  seems to be OK
-Digests:
-  all 4 digest functions seem to work
-  SHA-1: OK
-Signatures: not implemented
-Verify (currently only for RSA)
-  testing key 0 (05f67dba7b52cadc23164f7126b40a54f2772a31d9d9ffeb5f71225fe19f4813) -- non-RSA, skipping
-  testing key 1 (467d6c353163e5b3c8571efda38102daa619f6cf48fc78674cb57f409d2f980f) with 1 mechanism -- non-RSA, skipping
-  testing key 2 (411761070a0aa7e80654a626ecaf908f9e56ec418f653c41ff0d1ff1dec30656) with 1 mechanism -- non-RSA, skipping
-Unwrap: not implemented
-Decryption (currently only for RSA)
-  testing key 0 (05f67dba7b52cadc23164f7126b40a54f2772a31d9d9ffeb5f71225fe19f4813)  -- non-RSA, skipping
-  testing key 1 (467d6c353163e5b3c8571efda38102daa619f6cf48fc78674cb57f409d2f980f)  -- non-RSA, skipping
-  testing key 2 (411761070a0aa7e80654a626ecaf908f9e56ec418f653c41ff0d1ff1dec30656)  -- non-RSA, skipping
-No errors
-```
-
-If the slot is already in use by another session, you might see the following output, which is reasonable:
-
-```
-$ PKCS11_PROXY_SOCKET="tcp://9.47.152.235:30846`" pkcs11-tool --module=/usr/local/lib/libpkcs11-proxy.so --token-label PKCS11 --pin 87654312 -t
-
-error: PKCS11 function C_Login failed: rv = CKR_USER_ALREADY_LOGGED_IN (0x100)
-Aborting.
-```
-
-**Note:**  Save the address of the `PKCS11_PROXY_SOCKET` because it is required when you configure an IBM Blockchain Platform node to use this HSM. Namely it is the value of the **HSM proxy endpoint**.
-
-### Install the pkcs11-tool
-
-Download the **pkcs11-proxy** source code and then build the source code to generate the PKCS #11 proxy library by running the following commands on your Linux OS:
-
-```
-apt-get update \
-    && apt-get -y install \
-    unzip \
-    make \
-    autoconf \
-    automake \
-    cmake \
-    build-essential \
-    libtool \
-    pkg-config \
-    libssl-dev \
-    libseccomp-dev \
-    libgflags-dev \
-    libgtest-dev \
-    libc++-helpers \
-    uuid-dev \
-    gcc \
-    g++ \
-    alien \
-    git
-
-git clone https://github.com/SUNET/pkcs11-proxy && \
-    cd pkcs11-proxy && \
-    cmake . && \
-    make && \
-    make install
-```
-
-If successful, you can see the following information on your console:
-
-```
-Install the project...
--- Install configuration: ""
--- Installing: /usr/local/bin/pkcs11-daemon
--- Installing: /usr/local/lib/libpkcs11-proxy.so.0.1
--- Installing: /usr/local/lib/libpkcs11-proxy.so.0
--- Installing: /usr/local/lib/libpkcs11-proxy.so
-```
-
-Then, run the following command to install `pkcs11-tool`:
-
-```
-sudo apt install opensc
-```
-
-# Deploying multiple PKCS #11 proxies on the same Kubernetes cluster
-
-After completing step #2 above, you need to make the following updates to the scripts:
-
-## Create a new PVC
-
-Create a new PVC with a different name, for example: `opencryptoki-token-pvc-2nd`.
-
-
-```yaml
-kind: PersistentVolumeClaim
-apiVersion: v1
-metadata:
-  name: opencryptoki-token-pvc-2nd
-spec:
-  accessModes:
-    - ReadWriteMany
-  resources:
-    requests:
-      storage: 1Gi
-  storageClassName: <STORAGECLASS_NAME>
-```
-
-## Create a label for the node, on which the second pkcs11-proxy deploys
-
-```
-kubectl label node 2nd-node-ip-x.x.x.x --overwrite=true hsm=NewLabel-2nd
-```
-
-## Update content in `pkcs11-proxy-opencryptoki.yaml`
-
-You need to add two new sections to the `pkcs11-proxy-opencryptoki.yaml` file for the the second proxy. Copy the existing content in the file and append it to the bottom of the file.
-
-In the newly added `kind:service` section, you will need to update the following fields:
-
-```
-metadata.name
-metadata.lables.app
-spec.selector.app
-```
-
-In the newly added `kind:deployment` section, you will need to update the following fields:
-```
-metadata.name
-metadata.lables.app
-spec.selector.matchLabels.app
-spec.template.metadata.lables.app
-spec.template.spec.nodeSelector
-spec.template.spec.volumes.persistentVolumeClaim.claimName
-```
-
-For example, the newly added sections of the .yaml file would be similar to:
-
-```yaml
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: pkcs11-proxy-2nd
-  labels:
-    app: pkcs11-2nd
-spec:
-  ports:
-  - name: http
-    port: 2345
-    protocol: TCP
-    targetPort: 2345
-  selector:
-    app: pkcs11-2nd
-  type: NodePort
-
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: pkcs11-proxy-2nd
-  labels:
-    app: pkcs11-2nd
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: pkcs11-2nd
-  template:
-    metadata:
-      labels:
-        app: pkcs11-2nd
-    spec:
-      imagePullSecrets:
-        - name: <IBPREPO-KEY-SECRET>
-      securityContext:
-        privileged: true
-      nodeSelector:
-        hsm: NewLabel-2nd
-      containers:
-      - name: proxy
-        image: <IMAGE-TAG>
-        imagePullPolicy: IfNotPresent
-        ports:
-        - containerPort: 2345
-        securityContext:
-          privileged: true
-          allowPrivilegeEscalation: true
-          readOnlyRootFilesystem: false
-        livenessProbe:
-          tcpSocket:
-            port: 2345
-          initialDelaySeconds: 15
-          timeoutSeconds: 5
-          failureThreshold: 5
-        readinessProbe:
-          tcpSocket:
-            port: 2345
-          initialDelaySeconds: 15
-          timeoutSeconds: 5
-          periodSeconds: 5
-        volumeMounts:
-        - name: token-object-storage
-          mountPath: /var/lib/opencryptoki
-        - name: opencryptoki-config
-          mountPath: /etc/opencryptoki
-      volumes:
-      - name: token-object-storage
-        persistentVolumeClaim:
-          claimName: opencryptoki-token-pvc-2nd
-      - name: opencryptoki-config
-        emptyDir: {}
++ pkcs11-daemon /usr/lib/s390x-linux-gnu/pkcs11/PKCS11_API.so
+pkcs11-proxy[20]: Listening on: tcp://0.0.0.0:2345
 ```
