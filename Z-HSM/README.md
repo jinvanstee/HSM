@@ -113,7 +113,7 @@ Token #4 Info:
 
 ## Step 2. Build the Docker image
 
-Clone this repo to your Linux on s390x system. Before you can build the Docker image, you need to provide your HSM slot number, HSM slot label, initialization code, and PIN by editing the [`entrypoint.sh`](./docker-image/entrypoint.sh) file. This file is used to initialize the Docker container, by passing the required setup steps to the container.
+Clone this repo to your Linux on s390x system. Before you can build the Docker image, you need to provide your HSM slot number, HSM slot label, initialization code, and PIN by editing the [`docker-image/entrypoint.sh`](./docker-image/entrypoint.sh) file. This file is used to initialize the Docker container, by passing the required setup steps to the container.
 
 Replace the following variables in the file with the ones you setup in the previous step:
 
@@ -178,11 +178,11 @@ Run the following command to build the Docker image:
 docker build -t pkcs11-proxy-opencryptoki:s390x-1.0.0 -f Dockerfile .
 ```
 
-This command is also provided in the [docker-image-build.sh](./docker-image/docker-image-build.sh) file.
+This command is also provided in the [docker-image/docker-image-build.sh](./docker-image/docker-image-build.sh) file.
 
 ## Step 3. Run pkcs11-proxy Docker container
 
-To deploy the newly built `pkcs11-proxy-opencryptoki` image, edit the shell script provided in [run-docker.sh](./deployment/run-docker.sh) to match your EP11 initialization details (If you didn't do this directly in [entrypoint.sh](./docker-image/entrypoint.sh) back in Step 2, you can choose to pass the variables in this file to your running Docker container instead). Deploy the Docker container with:
+To deploy the newly built `pkcs11-proxy-opencryptoki` image, edit the shell script provided in [deployment/run-docker.sh](./deployment/run-docker.sh) to match your EP11 initialization details (If you didn't do this directly in [entrypoint.sh](./docker-image/entrypoint.sh) back in Step 2, you can choose to pass the variables in this file to your running Docker container instead). Deploy the Docker container with:
 
 `. deployment/run-docker.sh
 `
