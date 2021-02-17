@@ -246,4 +246,4 @@ CARD.DOMAIN TYPE  MODE        STATUS  REQUEST_CNT
 08.0015     CEX6P EP11-Coproc online           20
 ```
 
-# The end
+# You have deployed pkcs11-proxy as a standalone Docker container and have now configured IBP to use it! The end.
