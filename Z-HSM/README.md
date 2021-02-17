@@ -8,7 +8,7 @@ Please note that the official supported way of having IBP use the Z HSM is docum
 * The IBM Blockchain Platform nodes have network access to the Linux system on s390x.
 * The Linux system must be enabled with the EP11 stack. Please see [here](https://www.ibm.com/support/knowledgecenter/linuxonibm/com.ibm.linux.z.lxce/lxce_building_stack.html) for full instructions on enabling the EP11 stack for your Linux on s390x system.
 
-## Step 1. Configuring openCryptoki for EP11 support
+## Step 1. Configuring openCryptoki for EP11
 After you have enabled your s390x Linux system with the EP11 stack, please go through this [documentation](https://www.ibm.com/support/knowledgecenter/linuxonibm/com.ibm.linux.z.lxce/lxce_configuring_ocryptoki_ep11tok.html) to configure openCryptoki for EP11 support. 
 
 I will share in this repo the configuration files that I used for your reference, but it is strongly advised to go through the documentation yourself to understand all the options and settings available to you.
