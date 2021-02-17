@@ -180,18 +180,70 @@ docker build -t pkcs11-proxy-opencryptoki:s390x-1.0.0 -f Dockerfile .
 
 This command is also provided in the [docker-image-build.sh](./docker-image/docker-image-build.sh) file.
 
-
-
 ## Step 3. Run pkcs11-proxy Docker container
 
-To deploy the newly built 'pkcs11-proxy' image, edit the shell script provided in [run-docker.sh](./deployment/run-docker.sh) to match your EP11 initialization details (If you didn't do this directly in [entrypoint.sh](./docker-image/entrypoint.sh) back in Step 2, you can choose to pass the variables in this file to your running Docker container). Deploy the Docker container with:
+To deploy the newly built `pkcs11-proxy-opencryptoki` image, edit the shell script provided in [run-docker.sh](./deployment/run-docker.sh) to match your EP11 initialization details (If you didn't do this directly in [entrypoint.sh](./docker-image/entrypoint.sh) back in Step 2, you can choose to pass the variables in this file to your running Docker container instead). Deploy the Docker container with:
 
 `. deployment/run-docker.sh
 `
 
-Check the Docker container logs, you should see the following to indicate that the pkcs11-proxy is listening for incoming requests.
+Check the Docker container logs with `docker logs <containder name> | tail -3`. You should see the following to indicate that the pkcs11-proxy is listening for incoming requests.
 
 ```
 + pkcs11-daemon /usr/lib/s390x-linux-gnu/pkcs11/PKCS11_API.so
 pkcs11-proxy[20]: Listening on: tcp://0.0.0.0:2345
 ```
+
+The container can be reached at `tcp://<your-Linux-system-ip>:2345` and you will need to supply this information when you are configuring your IBM Blockchain Platform nodes to use the Z HSM via the pkcs11-proxy.
+
+## Step 4. Configure IBM Blockchain Platform to use the pkcs11-proxy
+
+When configuring certificate authorities, peers, or ordering service nodes to use your HSM, you need to supply the following information:
+
+```
+HSM proxy endpoint: tcp://<your-Linux-system-ip>:2345
+HSM label: <your token label, i.e. EP11Tok>
+HSM pin: <your token user pin, i.e. 84959689>
+```
+
+Upon a successful IBP node deploy, you should see in the container log of the node messages similar to the following:
+
+```
+2020/04/15 23:20:56 [DEBUG] Initializing BCCSP with PKCS11 options &{SecLevel:256 HashFamily:SHA2 Ephemeral:false FileKeystore:0xc0018d87d0 DummyKeystore:<nil> Library:/usr/local/lib/libpkcs11-proxy.so Label:EP11Tok Pin:84959689 SoftVerify:false Immutable:false}
+WARNING: IGNORING: C_Initialize called twice for same process
+2020/04/15 23:20:56 [DEBUG] Initialize key material
+2020/04/15 23:20:56 [DEBUG] Making CA filenames absolute
+2020/04/15 23:20:56 [WARNING] &{69 The specified CA certificate file /data/org3ca/tlsca/ca-cert.pem does not exist}
+2020/04/15 23:20:56 [DEBUG] Root CA certificate request: {CN:tlsca Names:[{C:US ST:North Carolina L: O:Hyperledger OU:Fabric SerialNumber:}] Hosts:[localhost] KeyRequest:0xc000c1ba80 CA:0xc0011664b0 SerialNumber:}
+2020/04/15 23:20:56 [INFO] generating key: &{A:ecdsa S:256}
+2020/04/15 23:20:56 [DEBUG] generate key from request: algo=ecdsa, size=256
+2020-04-15 23:20:56.299 UTC [bccsp_p11] generateECKey -> INFO 002 Generated new P11 key, SKI fe8af6addca3305735e8fa166cd16cc74fddbd2edb4951eaa602b84c1d579c05
+2020/04/15 23:20:56 [INFO] encoded CSR
+2020/04/15 23:20:56 [DEBUG] validating configuration
+2020/04/15 23:20:56 [DEBUG] validate local profile
+2020/04/15 23:20:56 [DEBUG] profile is valid
+2020/04/15 23:20:56 [INFO] signed certificate with serial number 441149712754399999144436818013463799483598864801
+2020/04/15 23:20:56 [INFO] The CA key and certificate were generated for CA tlsca
+2020/04/15 23:20:56 [INFO] The key was stored by BCCSP provider 'PKCS11'
+2020/04/15 23:20:56 [INFO] The certificate is at: /data/org3ca/tlsca/ca-cert.pem
+```
+
+On the Linux system that is hosting the `pkcs11-proxy-opencryptoki` container you can also check the logs of the proxy container, and you should see messages similar to the following (you'll see different session numbers and client IP and port numbers):
+
+```
+pkcs11-proxy[20]: New session 1247940441-1627268567 (client 192.168.22.82, port 5767)
+
+pkcs11-proxy[20]: Session 77 stored in position 0
+```
+
+On the same Linux system, you can also run `lszcrypt` to see the request count increase:
+
+```
+$ lszcrypt
+CARD.DOMAIN TYPE  MODE        STATUS  REQUEST_CNT
+-------------------------------------------------
+08          CEX6P EP11-Coproc online           20
+08.0015     CEX6P EP11-Coproc online           20
+```
+
+# The end
