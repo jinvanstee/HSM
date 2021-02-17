@@ -1,7 +1,7 @@
 # PKCS11-proxy deployment as a standalone Docker container
 In order for your IBM Blockchain Platform nodes to use your IBM Z openCryptoki HSM to manage its private key, you must create a PKCS #11 proxy that allows the blockchain nodes to communicate with the Z HSM. This README describes how to build the PKCS #11 proxy into a Docker image and then deploy it to a Linux Virtual Machine on s390x. After you complete this process, you will have the values of the HSM proxy endpoint, HSM Label, and HSM PIN that are required by the IBM Blockchain Platform node to use the Z HSM.
 
-Please note that the official supported way of having IBP use the Z HSM is documented [here](https://github.com/IBM-Blockchain/HSM/tree/master/Z-HSM). This repo leverages assets from the aforementioned repo and documents a workaround to integrate with the Z-HSM. This workaround has been verified on Ubuntu 18.04 on Linux on IBM Z. Please also note that this is not a highly available workaround as it only sets up one pkcs11-proxy that is backed by one Z HSM adapter/domain pair.
+Please note that the official supported way of having IBP use the Z HSM is documented [here](https://github.com/IBM-Blockchain/HSM/tree/master/Z-HSM). This repo leverages assets from the aforementioned repo and documents a workaround to integrate with the Z-HSM. This workaround has been verified on Ubuntu 18.04 on Linux on IBM Z, with IBM Blockchain Platform version 2.5.1 fixpack 20201208. Please also note that this is not a highly available workaround as it only sets up one pkcs11-proxy that is backed by one Z HSM adapter/domain pair.
 
 ## Prerequisites
 * A Linux system on s390x to host the pkcs11-proxy container.
@@ -206,26 +206,34 @@ HSM label: <your token label, i.e. EP11Tok>
 HSM pin: <your token user pin, i.e. 84959689>
 ```
 
-Upon a successful IBP node deploy, you should see in the container log of the node messages similar to the following:
+Upon a successful IBP node deploy, you should see in the container log of the node messages similar to the following (this output example is from a CA node configured to use the Z HSM via PKCS11 proxy):
 
 ```
-2020/04/15 23:20:56 [DEBUG] Initializing BCCSP with PKCS11 options &{SecLevel:256 HashFamily:SHA2 Ephemeral:false FileKeystore:0xc0018d87d0 DummyKeystore:<nil> Library:/usr/local/lib/libpkcs11-proxy.so Label:EP11Tok Pin:84959689 SoftVerify:false Immutable:false}
-WARNING: IGNORING: C_Initialize called twice for same process
-2020/04/15 23:20:56 [DEBUG] Initialize key material
-2020/04/15 23:20:56 [DEBUG] Making CA filenames absolute
-2020/04/15 23:20:56 [WARNING] &{69 The specified CA certificate file /data/org3ca/tlsca/ca-cert.pem does not exist}
-2020/04/15 23:20:56 [DEBUG] Root CA certificate request: {CN:tlsca Names:[{C:US ST:North Carolina L: O:Hyperledger OU:Fabric SerialNumber:}] Hosts:[localhost] KeyRequest:0xc000c1ba80 CA:0xc0011664b0 SerialNumber:}
-2020/04/15 23:20:56 [INFO] generating key: &{A:ecdsa S:256}
-2020/04/15 23:20:56 [DEBUG] generate key from request: algo=ecdsa, size=256
-2020-04-15 23:20:56.299 UTC [bccsp_p11] generateECKey -> INFO 002 Generated new P11 key, SKI fe8af6addca3305735e8fa166cd16cc74fddbd2edb4951eaa602b84c1d579c05
-2020/04/15 23:20:56 [INFO] encoded CSR
-2020/04/15 23:20:56 [DEBUG] validating configuration
-2020/04/15 23:20:56 [DEBUG] validate local profile
-2020/04/15 23:20:56 [DEBUG] profile is valid
-2020/04/15 23:20:56 [INFO] signed certificate with serial number 441149712754399999144436818013463799483598864801
-2020/04/15 23:20:56 [INFO] The CA key and certificate were generated for CA tlsca
-2020/04/15 23:20:56 [INFO] The key was stored by BCCSP provider 'PKCS11'
-2020/04/15 23:20:56 [INFO] The certificate is at: /data/org3ca/tlsca/ca-cert.pem
+2021/02/17 02:40:34 [INFO] Configuration file location: /data/ca/fabric-ca-server-config.yaml
+2021/02/17 02:40:34 [INFO] Starting server in home directory: /data/ca
+2021/02/17 02:40:34 [INFO] Server Version: 1.4.9
+2021/02/17 02:40:34 [INFO] Server Levels: &{Identity:2 Affiliation:1 Certificate:1 Credential:1 RAInfo:1 Nonce:1}
+2021/02/17 02:40:34 [INFO] Loading CA from /data/tlsca/fabric-ca-server-config.yaml
+2021/02/17 02:40:34 [INFO] The CA key and certificate files already exist
+2021/02/17 02:40:34 [INFO] Key file location: /crypto/tlsca/key.pem
+2021/02/17 02:40:34 [INFO] Certificate file location: /crypto/tlsca/cert.pem
+2021/02/17 02:40:36 [INFO] Initialized sqlite3 database at /data/db/ca.db
+2021/02/17 02:40:36 [INFO] The issuer key was successfully stored. The public key is at: /data/tlsca/IssuerPublicKey, secret key is at: /data/tlsca/msp/keystore/IssuerSecretKey
+2021/02/17 02:40:36 [INFO] Idemix issuer revocation public and secret keys were generated for CA 'tlsca'
+2021/02/17 02:40:37 [INFO] The revocation key was successfully stored. The public key is at: /data/tlsca/IssuerRevocationPublicKey, private key is at: /data/tlsca/msp/keystore/IssuerRevocationPrivateKey
+2021/02/17 02:40:37 [INFO] The CA key and certificate files already exist
+2021/02/17 02:40:37 [INFO] Key file location: /crypto/ca/key.pem
+2021/02/17 02:40:37 [INFO] Certificate file location: /crypto/ca/cert.pem
+2021/02/17 02:40:37 [INFO] Initialized sqlite3 database at /data/db/ca.db
+2021/02/17 02:40:38 [INFO] The issuer key was successfully stored. The public key is at: /data/ca/IssuerPublicKey, secret key is at: /data/ca/msp/keystore/IssuerSecretKey
+2021/02/17 02:40:38 [INFO] Idemix issuer revocation public and secret keys were generated for CA 'ca'
+2021/02/17 02:40:38 [INFO] The revocation key was successfully stored. The public key is at: /data/ca/IssuerRevocationPublicKey, private key is at: /data/ca/msp/keystore/IssuerRevocationPrivateKey
+2021/02/17 02:40:38 [INFO] Home directory for default CA: /data/ca
+2021/02/17 02:40:38 [INFO] Operation Server Listening on [::]:9443
+2021/02/17 02:40:38 [INFO] Listening on https://0.0.0.0:7054
+2021/02/17 02:41:03 [INFO] 10.128.4.1:45262 GET /cainfo 200 0 "OK"
+2021/02/17 02:48:42 [INFO] 10.128.4.1:57042 GET /cainfo 200 0 "OK"
+
 ```
 
 On the Linux system that is hosting the `pkcs11-proxy-opencryptoki` container you can also check the logs of the proxy container, and you should see messages similar to the following (you'll see different session numbers and client IP and port numbers):
